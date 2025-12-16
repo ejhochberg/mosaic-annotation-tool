@@ -1,7 +1,7 @@
 # mosaic-annotation-tool
 Browser-based tool for annotating reef benthic community mosaics
 
-# Reef Annotation Tool
+# Mosaic Annotation Tool
 
 Client-side web app for annotating coral reef orthomosaics
 using OpenSeadragon.
