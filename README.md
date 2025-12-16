@@ -11,4 +11,4 @@ using OpenSeadragon.
 - Students export CSVs and upload to Canvas
 
 Usage:
-https://<username>.github.io/reef-annotation-tool/?mosaic=CPA1705_62108
+https://<username>.github.io/mosaic-annotation-tool/?mosaic=CPA1705_62108
