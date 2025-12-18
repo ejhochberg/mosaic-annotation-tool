@@ -162,6 +162,7 @@ body {
 /* ===============================
    CONFIG
 =============================== */
+const base_url = "https://ejhochberg.github.io/mosaic-annotation-tool/";
 const base_name = "CPA1705_62108";
 const radius = 100;
 
@@ -219,7 +220,7 @@ function updateBufferDisplay() {
 =============================== */
 viewer = OpenSeadragon({
     id: "viewer",
-    tileSources: base_name + "_dzi/" + base_name + "_dzi.dzi",
+    tileSources: base_url + base_name + "_dzi/" + base_name + "_dzi.dzi",
     showNavigationControl: false,
     keyboardNavEnabled: false,
     gestureSettingsMouse: {
