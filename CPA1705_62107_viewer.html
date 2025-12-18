@@ -167,27 +167,49 @@ const radius = 100;
 /* ===============================
    LABEL DEFINITIONS
 =============================== */
-const labelDefs = [
-    ["01", "coral-arborescent"],
-    ["02", "coral-branching"],
-    ["03", "coral-columnar"],
-    ["04", "coral-encrusting"],
-    ["05", "coral-explanate"],
-    ["06", "coral-laminar"],
-    ["07", "coral-massive"],
-    ["08", "algae-encrusting coralline"],
-    ["09", "algae-fleshy brown"],
-    ["10", "algae-fleshy green"],
-    ["11", "algae-fleshy red"],
-    ["12", "algae-turf"],
-    ["13", "sediment-sand"],
-    ["14", "sediment-rock"],
-    ["15", "other/unknown"]
-];
+let labelDefs = [];
+let labelMap = {};
+let validCodes = new Set();
 
-const labelMap = Object.fromEntries(labelDefs);
+fetch("labels.csv", { cache: "no-store" })
+  .then(response => {
+      if (!response.ok) {
+          throw new Error("Failed to load labels.csv");
+      }
+      return response.text();
+  })
+  .then(text => {
 
-const validCodes = new Set(Object.keys(labelMap));
+      // Parse CSV → labelDefs = [[code, description], ...]
+      labelDefs = text
+          .split(/\r?\n/)
+          .map(line => line.trim())
+          .filter(line => line.length > 0)
+          .map(line => {
+              const parts = line.split(",");
+              return [
+                  parts[0].trim(),
+                  parts.slice(1).join(",").trim()
+              ];
+          });
+
+      // Build lookup structures
+      labelMap = Object.fromEntries(labelDefs);
+      validCodes = new Set(Object.keys(labelMap));
+
+      // Rebuild label table now that labels exist
+      const labelDiv = document.getElementById("label-table");
+      if (labelDiv) {
+          labelDiv.innerHTML = "";
+          buildLabelTable();
+      }
+
+      console.log("Loaded labels:", labelDefs.length);
+
+  })
+  .catch(err => {
+      console.error("Label CSV error:", err);
+  });
 
 /* ===============================
    STATE
@@ -232,7 +254,6 @@ viewer.addOnceHandler("open", () => {
     buildPoints();
     drawOverlays();
     buildProgressTable();
-    buildLabelTable();
     enableHitTesting();
 });
 
@@ -581,7 +602,6 @@ function globalKeyHandler(e) {
     digitBuffer = "";
     updateBufferDisplay();
 }
-
 
 document.addEventListener("DOMContentLoaded", () => {
 
