@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Reef Annotation Tool</title>
+
+<style>
+/* ===============================
+   PAGE LAYOUT
+=============================== */
+body {
+    margin: 0;
+    display: flex;
+    height: 100vh;
+    font-family: sans-serif;
+}
+
+#viewer {
+    flex: 3;
+    background: black;
+}
+
+#sidebar {
+    flex: 1;
+    padding: 15px;
+    border-left: 1px solid #ccc;
+    overflow-y: auto;
+}
+
+#label-table {
+    margin-bottom: 16px;
+}
+
+#progress-container {
+    max-height: 300px;   /* adjust to taste */
+    overflow-y: auto;
+    border: 1px solid #ccc;
+    padding: 4px;
+}
+
+/* ===============================
+   INPUT
+=============================== */
+#id-box {
+    width: 100%;
+    font-size: 14px;
+    box-sizing: border-box;
+    margin-bottom: 8px;
+}
+
+#buffer-display {
+    font-family: monospace;
+    font-size: 20px;
+    font-weight: bold;
+    letter-spacing: 2px;
+    margin-bottom: 10px;
+    color: #444;
+}
+
+/* ===============================
+   TABLES
+=============================== */
+.point-row, .label-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px;
+    border-bottom: 1px solid #ddd;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.point-row.active {
+    background: #cce6ff;
+    font-weight: bold;
+}
+
+.point-row.done {
+    background: #d7ffd7;
+}
+
+.label-row:hover {
+    background: #eee;
+}
+
+.label-row.selected {
+    background: #cce6ff;
+    font-weight: bold;
+}
+
+/* ===============================
+   OVERLAYS
+=============================== */
+.circle-overlay {
+    border: 3px solid yellow;
+    border-radius: 50%;
+    box-sizing: border-box;
+    pointer-events: none;
+}
+
+.circle-overlay.selected {
+    border-color: cyan;
+}
+
+.circle-overlay.done {
+    border-color: lime;
+}
+
+.circle-label {
+    position: absolute;
+    left: -12px;
+    top: 60%;
+    color: yellow;
+    font-size: 18px;
+    font-weight: bold;
+    text-shadow:
+        1px 1px 2px black,
+        -1px 1px 2px black,
+        1px -1px 2px black,
+        -1px -1px 2px black;
+    pointer-events: none;
+}
+
+.circle-overlay.selected .circle-label {
+    color: cyan;
+}
+
+.circle-overlay.done .circle-label {
+    color: lime;
+}
+</style>
+</head>
+
+<body>
+
+<div id="viewer"></div>
+
+<div id="sidebar">
+
+<button id="export-btn">Export CSV</button>
+
+<h3>Current Point: <span id="current-label">—</span></h3>
+
+<div id="buffer-display">--</div>
+
+<input id="id-box" type="text" placeholder="Enter label code (e.g. 07)">
+
+<h4>Labels</h4>
+<div id="label-table"></div>
+
+<h4>Progress</h4>
+<div id="progress-container">
+    <div id="progress"></div>
+</div>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.0/openseadragon.min.js"></script>
+
+<script>
+/* ===============================
+   CONFIG
+=============================== */
+const base_url = "https://ejhochberg.github.io/mosaic-annotation-tool/";
+const base_name = "3_842_seaward_reef_flat";
+const radius = 100;
+
+/* ===============================
+   LABEL DEFINITIONS
+=============================== */
+let labelDefs = [];
+let labelMap = {};
+let validCodes = new Set();
+
+fetch("labels.csv", { cache: "no-store" })
+  .then(response => {
+      if (!response.ok) {
+          throw new Error("Failed to load labels.csv");
+      }
+      return response.text();
+  })
+  .then(text => {
+
+      // Parse CSV → labelDefs = [[code, description], ...]
+      labelDefs = text
+          .split(/\r?\n/)
+          .map(line => line.trim())
+          .filter(line => line.length > 0)
+          .map(line => {
+              const parts = line.split(",");
+              return [
+                  parts[0].trim(),
+                  parts.slice(1).join(",").trim()
+              ];
+          });
+
+      // Build lookup structures
+      labelMap = Object.fromEntries(labelDefs);
+      validCodes = new Set(Object.keys(labelMap));
+
+      // Rebuild label table now that labels exist
+      const labelDiv = document.getElementById("label-table");
+      if (labelDiv) {
+          labelDiv.innerHTML = "";
+          buildLabelTable();
+      }
+
+      console.log("Loaded labels:", labelDefs.length);
+
+  })
+  .catch(err => {
+      console.error("Label CSV error:", err);
+  });
+
+/* ===============================
+   STATE
+=============================== */
+let viewer;
+let points = [];
+let classifications = {};
+let overlays = {};
+let selectedPoint = null;
+let selectedPoints = [];
+let digitBuffer = "";
+
+function updateBufferDisplay() {
+    const el = document.getElementById("buffer-display");
+    if (!el) return;
+
+    if (digitBuffer.length === 0) {
+        el.innerText = "--";
+    } else if (digitBuffer.length === 1) {
+        el.innerText = digitBuffer + "-";
+    } else {
+        el.innerText = digitBuffer;
+    }
+}
+
+/* ===============================
+   VIEWER
+=============================== */
+viewer = OpenSeadragon({
+    id: "viewer",
+    prefixUrl: "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.0/images/",
+    tileSources: base_url + base_name + "_dzi/" + base_name + "_dzi.dzi",
+    showNavigationControl: false,
+    keyboardNavEnabled: false,
+    gestureSettingsMouse: {
+        clickToZoom: false,
+        scrollToZoom: true
+    }
+});
+
+viewer.addOnceHandler("open", () => {
+    buildPoints();
+    drawOverlays();
+    buildProgressTable();
+    enableHitTesting();
+});
+
+/* ===============================
+   POINT GRID (MATCHES MATLAB)
+=============================== */
+function buildPoints() {
+    const size = viewer.world.getItemAt(0).getContentSize();
+    const xs = centers(size.x, 10);
+    const ys = centers(size.y, 10);
+    const rows = "ABCDEFGHIJ".split("");
+
+    points = [];
+    for (let i = 0; i < 10; i++)
+        for (let j = 0; j < 10; j++)
+            points.push({
+                x: xs[j],
+                y: ys[i],
+                label: rows[i] + String(j + 1).padStart(2, "0"),
+                classified: false
+            });
+}
+
+/* ===============================
+   OVERLAYS
+=============================== */
+function drawOverlays() {
+    points.forEach(pt => {
+        const div = document.createElement("div");
+        div.className = "circle-overlay";
+        const lbl = document.createElement("div");
+        lbl.className = "circle-label";
+        lbl.innerText = pt.label;
+        div.appendChild(lbl);
+
+        overlays[pt.label] = div;
+
+        viewer.addOverlay({
+            element: div,
+            location: viewer.viewport.imageToViewportRectangle(
+                pt.x - radius, pt.y - radius, radius * 2, radius * 2
+            )
+        });
+    });
+}
+
+/* ===============================
+   HIT TESTING
+=============================== */
+function enableHitTesting() {
+    viewer.addHandler("canvas-click", evt => {
+        evt.preventDefaultAction = true;
+    
+        const img = viewer.viewport.viewportToImageCoordinates(
+            viewer.viewport.pointFromPixel(evt.position)
+        );
+    
+        let best = null;
+        let bestD2 = Infinity;
+    
+        for (const pt of points) {
+            const dx = img.x - pt.x;
+            const dy = img.y - pt.y;
+            const d2 = dx*dx + dy*dy;
+            if (d2 <= radius*radius && d2 < bestD2) {
+                best = pt;
+                bestD2 = d2;
+            }
+        }
+    
+        if (!best) {
+            // Clear selection ONLY on normal click
+            if (!evt.originalEvent.shiftKey) {
+                clearSelection();
+                selectedPoint = null;
+        
+                document.getElementById("current-label").innerText = "—";
+                document.getElementById("id-box").value = "";
+        
+                document.querySelectorAll(".point-row")
+                    .forEach(r => r.classList.remove("active"));
+            }
+            return;
+        }
+    
+        if (evt.originalEvent.shiftKey) {
+            // SHIFT-CLICK: toggle selection
+            if (selectedPoints.includes(best)) {
+                removeFromSelection(best);
+            } else {
+                addToSelection(best);
+            }
+    
+            // Keep "current point" meaningful
+            selectedPoint = best;
+            document.getElementById("current-label").innerText = best.label;
+    
+        } else {
+            // NORMAL CLICK: single selection
+            clearSelection();
+            addToSelection(best);
+            selectPoint(best);
+        }
+    });
+}
+
+/* ===============================
+   SELECTION
+=============================== */
+function selectPoint(pt) {
+    clearSelection();
+    addToSelection(pt);
+    selectedPoint = pt;
+
+    document.getElementById("current-label").innerText = pt.label;
+
+    document.querySelectorAll(".point-row")
+        .forEach(r => r.classList.remove("active"));
+
+    const row = document.getElementById("row-" + pt.label);
+    if (row) {
+        row.classList.add("active");
+        row.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+
+    document.getElementById("id-box").value =
+        classifications[pt.label] || "";
+}
+
+
+/* ===============================
+   ASSIGNMENT
+=============================== */
+function assignLabel(code) {
+    if (selectedPoints.length === 0) return;
+
+    selectedPoints.forEach(pt => {
+        classifications[pt.label] = code;
+        pt.classified = true;
+
+        overlays[pt.label].classList.add("done");
+        overlays[pt.label].classList.remove("selected");
+
+        updateProgressRow(pt.label, code);
+    });
+
+    // Auto-advance ONLY if exactly one point was selected
+    if (selectedPoints.length === 1) {
+        autoAdvance();
+    } else {
+        clearSelection();
+        selectedPoint = null;
+        document.getElementById("current-label").innerText = "—";
+        document.getElementById("id-box").value = "";
+    }
+}
+
+
+/* ===============================
+   AUTO ADVANCE
+=============================== */
+function autoAdvance() {
+    const next = points.find(p => !p.classified);
+    if (!next) return;
+
+    selectPoint(next);
+
+    // Pan view to next point (no zoom change)
+    const vp = viewer.viewport.imageToViewportCoordinates(next.x, next.y);
+    viewer.viewport.panTo(vp, true);  // true = animate gently
+}
+
+/* ===============================
+   TABLES
+=============================== */
+function buildProgressTable() {
+    const div = document.getElementById("progress");
+    points.forEach(pt => {
+        const r = document.createElement("div");
+        r.className = "point-row";
+        r.id = "row-"+pt.label;
+        r.innerHTML = `<span>${pt.label}</span><span>—</span>`;
+        div.appendChild(r);
+    });
+}
+
+function updateProgressRow(label, code) {
+    const r = document.getElementById("row-"+label);
+    r.classList.add("done");
+    r.children[1].innerText = labelMap[code] || code;
+}
+
+function buildLabelTable() {
+    const div = document.getElementById("label-table");
+    labelDefs.forEach(([c,t]) => {
+        const r = document.createElement("div");
+        r.className = "label-row";
+        r.innerHTML = `<span>${c}</span><span>${t}</span>`;
+        r.onclick = () => assignLabel(c);
+        div.appendChild(r);
+    });
+}
+
+/* ===============================
+   UTILS
+=============================== */
+function centers(L,n){
+    const a=[]; for(let i=0;i<n;i++) a.push((i+0.5)*L/n); return a;
+}
+
+function exportCSV() {
+
+    let lines = [];
+    lines.push("Point,Code,Description,X_pixel,Y_pixel");
+
+    points.forEach(pt => {
+        const code = classifications[pt.label] || "";
+        const desc = labelMap[code] || "";
+        lines.push(
+            `${pt.label},${code},"${desc}",${pt.x.toFixed(1)},${pt.y.toFixed(1)}`
+        );
+    });
+
+    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = base_name + "_annotations.csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+function clearSelection() {
+    selectedPoints.forEach(p =>
+        overlays[p.label].classList.remove("selected")
+    );
+    selectedPoints = [];
+}
+
+function addToSelection(pt) {
+    if (!selectedPoints.includes(pt)) {
+        selectedPoints.push(pt);
+        overlays[pt.label].classList.add("selected");
+    }
+}
+
+function removeFromSelection(pt) {
+    selectedPoints = selectedPoints.filter(p => p !== pt);
+    overlays[pt.label].classList.remove("selected");
+}
+
+function globalKeyHandler(e) {
+
+    // --------------------------------------------------
+    // HARD STOP: intercept BEFORE OpenSeadragon
+    // --------------------------------------------------
+    if (
+        (e.key >= "0" && e.key <= "9") ||
+        e.key === "Escape" ||
+        e.key === "z" || e.key === "Z" ||
+        ["ArrowLeft","ArrowRight","ArrowUp","ArrowDown"].includes(e.key)
+    ) {
+        e.stopImmediatePropagation();
+        e.preventDefault();
+    }
+
+    // --------------------------------------------------
+    // Ignore modifier combinations
+    // --------------------------------------------------
+    if (e.ctrlKey || e.metaKey || e.altKey) {
+        digitBuffer = "";
+        updateBufferDisplay();
+        return;
+    }
+
+    // --------------------------------------------------
+    // ESC — clear selection and buffer
+    // --------------------------------------------------
+    if (e.key === "Escape") {
+        digitBuffer = "";
+        updateBufferDisplay();
+
+        clearSelection();
+        selectedPoint = null;
+
+        document.getElementById("current-label").innerText = "—";
+        document.querySelectorAll(".point-row")
+            .forEach(r => r.classList.remove("active"));
+
+        return;
+    }
+
+    // --------------------------------------------------
+    // Z — zoom to full extent
+    // --------------------------------------------------
+    if (e.key === "z" || e.key === "Z") {
+        digitBuffer = "";
+        updateBufferDisplay();
+        viewer.viewport.goHome(true);
+        return;
+    }
+
+    // --------------------------------------------------
+    // Arrow keys — reserved
+    // --------------------------------------------------
+    if (["ArrowLeft","ArrowRight","ArrowUp","ArrowDown"].includes(e.key)) {
+        digitBuffer = "";
+        updateBufferDisplay();
+        return;
+    }
+
+    // --------------------------------------------------
+    // Digit handling
+    // --------------------------------------------------
+    if (e.key >= "0" && e.key <= "9") {
+
+        digitBuffer += e.key;
+        updateBufferDisplay();
+
+        if (digitBuffer.length === 2) {
+
+            const code = digitBuffer;
+            const bufferEl = document.getElementById("buffer-display");
+
+            if (validCodes.has(code)) {
+                if (bufferEl) bufferEl.style.color = "green";
+                assignLabel(code);
+            } else {
+                if (bufferEl) bufferEl.style.color = "red";
+            }
+
+            setTimeout(() => {
+                digitBuffer = "";
+                updateBufferDisplay();
+            }, 150);
+        }
+        return;
+    }
+
+    // --------------------------------------------------
+    // Any other key clears buffer
+    // --------------------------------------------------
+    digitBuffer = "";
+    updateBufferDisplay();
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+
+    window.addEventListener("keydown", globalKeyHandler, { capture: true });
+    window.addEventListener("keypress", globalKeyHandler, { capture: true });
+
+    const exportBtn = document.getElementById("export-btn");
+    if (exportBtn) {
+        exportBtn.onclick = exportCSV;
+    }
+
+});
+
+
+</script>
+
+</body>
+</html>
