@@ -400,17 +400,15 @@ function assignLabel(code) {
         updateProgressRow(pt.label, code);
     });
 
-    // Auto-advance ONLY if exactly one point was selected
-    if (selectedPoints.length === 1) {
-        autoAdvance();
-    } else {
-        clearSelection();
-        selectedPoint = null;
-        document.getElementById("current-label").innerText = "—";
-        document.getElementById("id-box").value = "";
-    }
-}
+    // Clear selection state
+    clearSelection();
+    selectedPoint = null;
+    document.getElementById("current-label").innerText = "—";
+    document.getElementById("id-box").value = "";
 
+    // ALWAYS auto-advance to lowest unclassified point
+    autoAdvance();
+}
 
 /* ===============================
    AUTO ADVANCE
